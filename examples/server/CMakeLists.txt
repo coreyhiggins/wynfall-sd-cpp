@@ -105,3 +105,12 @@ if(WIN32 AND NOT MSVC)
 endif()
 
 target_compile_features(${TARGET} PUBLIC c_std_11 cxx_std_17)
+
+# Wynfall patch: the guard attacked over real HTTP, no model needed. Run the binary directly.
+add_executable(wynfall-guard-test guard_test.cpp)
+target_include_directories(wynfall-guard-test PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty)
+target_link_libraries(wynfall-guard-test PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(wynfall-guard-test PUBLIC cxx_std_17)
+if(WIN32 AND NOT MSVC)
+    target_link_libraries(wynfall-guard-test PRIVATE ws2_32)
+endif()

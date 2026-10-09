@@ -12,6 +12,7 @@
 #include "common/resource_owners.hpp"
 #include "routes.h"
 #include "runtime.h"
+#include "wynfall_guard.h"
 
 #ifdef HAVE_INDEX_HTML
 #include "frontend/dist/gen_index_html.h"
@@ -73,6 +74,20 @@ int main(int argc, const char** argv) {
         std::cout << version_string() << "\n";
         return EXIT_SUCCESS;
     }
+    // Wynfall patch: --api-key-env NAME names the environment variable that holds this launch's key. The key never
+    // travels on the command line, so it does not show in a process listing.
+    std::string api_key_env;
+    std::vector<const char*> kept_args;
+    for (int i = 0; i < argc; i++) {
+        if (i > 0 && std::string(argv[i]) == "--api-key-env" && i + 1 < argc) {
+            api_key_env = argv[++i];
+            continue;
+        }
+        kept_args.push_back(argv[i]);
+    }
+    argc = static_cast<int>(kept_args.size());
+    argv = kept_args.data();
+
     SDSvrParams svr_params;
     SDContextParams ctx_params;
     // Preserve the CLI default while disabling cwd scans for sd-server.
@@ -81,6 +96,18 @@ int main(int argc, const char** argv) {
 
     sd_set_log_callback(sd_log_cb, (void*)&svr_params);
     parse_args(argc, argv, svr_params, ctx_params, default_gen_params);
+
+    // Wynfall patch: refuse to run without a key, and refuse any bind other than loopback.
+    const char* key_value = api_key_env.empty() ? nullptr : std::getenv(api_key_env.c_str());
+    const std::string api_key = key_value ? key_value : "";
+    if (api_key.size() < 16) {
+        std::cerr << "error: set --api-key-env to the name of an environment variable holding a key of 16 or more characters\n";
+        return 2;
+    }
+    if (!wynfall::is_loopback_ip(svr_params.listen_ip)) {
+        std::cerr << "error: this build listens on 127.0.0.1 only\n";
+        return 2;
+    }
 
     LOG_VERBOSE("version: %s", version_string().c_str());
     LOG_VERBOSE("%s", sd_get_system_info());
@@ -120,21 +147,10 @@ int main(int argc, const char** argv) {
 
     httplib::Server svr;
 
-    svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
-        std::string origin = req.get_header_value("Origin");
-        if (origin.empty()) {
-            origin = "*";
-        }
-        res.set_header("Access-Control-Allow-Origin", origin);
-        res.set_header("Access-Control-Allow-Credentials", "true");
-        res.set_header("Access-Control-Allow-Methods", "*");
-        res.set_header("Access-Control-Allow-Headers", "*");
-
-        if (req.method == "OPTIONS") {
-            res.status = 204;
-            return httplib::Server::HandlerResponse::Handled;
-        }
-        return httplib::Server::HandlerResponse::Unhandled;
+    // Wynfall patch: the upstream handler that answered every origin and every preflight is gone. See wynfall_guard.h.
+    const int guard_port = svr_params.listen_port;
+    svr.set_pre_routing_handler([&api_key, guard_port](const httplib::Request& req, httplib::Response& res) {
+        return wynfall::guard(req, res, api_key, guard_port);
     });
 
     std::string index_html;
